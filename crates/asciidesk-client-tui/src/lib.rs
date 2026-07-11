@@ -212,6 +212,14 @@ impl Client {
         #[derive(PartialEq)]
         enum ClientMode { Pty, Desktop }
         let mut mode = ClientMode::Pty;
+        let mut zoom_factor: f32 = 1.0;
+        let mut pan_x: f32 = 0.0;
+        let mut pan_y: f32 = 0.0;
+        
+        // Clipboard synchronization interval
+        let mut clipboard_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        let mut last_clipboard_text = String::new();
+        let mut cb = arboard::Clipboard::new().ok();
 
         loop {
             tokio::select! {
@@ -230,11 +238,13 @@ impl Client {
                                 if key_event.code == KeyCode::Char('g') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     if mode == ClientMode::Pty {
                                         mode = ClientMode::Desktop;
+                                        let _ = crossterm::execute!(stdout, crossterm::event::EnableMouseCapture);
                                         let _ = stream.send(&ClientToHost::StartDesktopStream).await;
                                         print!("\x1b[2J\x1b[H");
                                         let _ = stdout.flush();
                                     } else {
                                         mode = ClientMode::Pty;
+                                        let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
                                         let _ = stream.send(&ClientToHost::StopDesktopStream).await;
                                         print!("\x1b[2J\x1b[H");
                                         let _ = stdout.flush();
@@ -242,10 +252,89 @@ impl Client {
                                         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
                                         let _ = stream.send(&ClientToHost::PtyResize { cols, rows }).await;
                                     }
+                                } else if key_event.code == KeyCode::F(1) {
+                                    // Handle Settings menu toggle placeholder
+                                    // Here we could open a ratatui popup, or print a status bar
+                                    if mode == ClientMode::Desktop {
+                                        print!("\x1b[1;1H\x1b[44m\x1b[37m [ASCIIDesk Settings] Zoom: {:.1}x | Mode: Desktop | Host: {} \x1b[0m", zoom_factor, "connected");
+                                        let _ = stdout.flush();
+                                    }
                                 } else if mode == ClientMode::Pty {
                                     if let Some(bytes) = key_event_to_bytes(key_event) {
                                         stream.send(&ClientToHost::PtyInput { bytes }).await?;
                                     }
+                                } else if mode == ClientMode::Desktop {
+                                    // Send keyboard to host
+                                    let keycode = match key_event.code {
+                                        KeyCode::Char(c) => c as u32,
+                                        KeyCode::Enter => 13,
+                                        KeyCode::Backspace => 8,
+                                        KeyCode::Esc => 27,
+                                        _ => 0,
+                                    };
+                                    if keycode != 0 {
+                                        stream.send(&ClientToHost::KeyboardInput { keycode, state: 0 }).await?;
+                                    }
+                                }
+                            }
+                        }
+                        Event::Mouse(mouse_event) => {
+                            if mode == ClientMode::Desktop {
+                                use crossterm::event::{MouseEventKind, MouseButton};
+                                
+                                match mouse_event.kind {
+                                    MouseEventKind::ScrollDown => {
+                                        if mouse_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                            zoom_factor = (zoom_factor - 0.2).max(0.2);
+                                            stream.send(&ClientToHost::SetZoom { zoom_factor, pan_x, pan_y }).await?;
+                                        } else {
+                                            stream.send(&ClientToHost::MouseScroll { delta_x: 0, delta_y: -1 }).await?;
+                                        }
+                                    }
+                                    MouseEventKind::ScrollUp => {
+                                        if mouse_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                            zoom_factor = (zoom_factor + 0.2).min(5.0);
+                                            stream.send(&ClientToHost::SetZoom { zoom_factor, pan_x, pan_y }).await?;
+                                        } else {
+                                            stream.send(&ClientToHost::MouseScroll { delta_x: 0, delta_y: 1 }).await?;
+                                        }
+                                    }
+                                    MouseEventKind::Down(btn) | MouseEventKind::Up(btn) => {
+                                        let button_id = match btn {
+                                            MouseButton::Left => 0,
+                                            MouseButton::Right => 1,
+                                            MouseButton::Middle => 2,
+                                        };
+                                        let state = if matches!(mouse_event.kind, MouseEventKind::Down(_)) { 0 } else { 1 };
+                                        stream.send(&ClientToHost::MouseInput { 
+                                            x: mouse_event.column, 
+                                            y: mouse_event.row, 
+                                            button: button_id, 
+                                            state 
+                                        }).await?;
+                                    }
+                                    MouseEventKind::Drag(btn) => {
+                                        let button_id = match btn {
+                                            MouseButton::Left => 0,
+                                            MouseButton::Right => 1,
+                                            MouseButton::Middle => 2,
+                                        };
+                                        stream.send(&ClientToHost::MouseInput { 
+                                            x: mouse_event.column, 
+                                            y: mouse_event.row, 
+                                            button: button_id, 
+                                            state: 2 
+                                        }).await?;
+                                    }
+                                    MouseEventKind::Moved => {
+                                        stream.send(&ClientToHost::MouseInput { 
+                                            x: mouse_event.column, 
+                                            y: mouse_event.row, 
+                                            button: 3, 
+                                            state: 2 
+                                        }).await?;
+                                    }
+                                    _ => {} // Ignore ScrollLeft and ScrollRight
                                 }
                             }
                         }
@@ -290,17 +379,37 @@ impl Client {
                                 let _ = stdout.flush();
                             }
                         }
+                        Ok(HostToClient::ClipboardText { text }) => {
+                            if let Some(ref mut ctx) = cb {
+                                let _ = ctx.set_text(text.clone());
+                                last_clipboard_text = text;
+                            }
+                        }
                         Ok(HostToClient::Pong) => {
                             last_pong = std::time::Instant::now();
                         }
                         Ok(HostToClient::Close) | Err(_) => {
                             break;
                         }
-                        _ => {}
+                        _ => {} // Catch-all for unhandled HostToClient messages
+                    }
+                }
+                _ = clipboard_interval.tick() => {
+                    if mode == ClientMode::Desktop {
+                        if let Some(ref mut ctx) = cb {
+                            if let Ok(text) = ctx.get_text() {
+                                if text != last_clipboard_text && !text.is_empty() {
+                                    last_clipboard_text = text.clone();
+                                    let _ = stream.send(&ClientToHost::ClipboardText { text }).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+        
+        let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
 
         Ok(())
     }

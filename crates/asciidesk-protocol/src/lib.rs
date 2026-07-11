@@ -38,9 +38,28 @@ pub enum ClientToHost {
         cols: u16,
         rows: u16,
     },
-    MouseEventPlaceholder,
-    KeyboardEventPlaceholder,
-    DesktopControlRequestPlaceholder,
+    MouseInput {
+        x: u16,
+        y: u16,
+        button: u8, // 0: Left, 1: Right, 2: Middle, 3: None (just move)
+        state: u8,  // 0: Down, 1: Up, 2: Move
+    },
+    MouseScroll {
+        delta_x: i32,
+        delta_y: i32,
+    },
+    KeyboardInput {
+        keycode: u32,
+        state: u8, // 0: Down, 1: Up
+    },
+    ClipboardText {
+        text: String,
+    },
+    SetZoom {
+        zoom_factor: f32,
+        pan_x: f32,
+        pan_y: f32,
+    },
     StartDesktopStream,
     StopDesktopStream,
     Ping,
@@ -82,6 +101,9 @@ pub enum HostToClient {
     Error {
         code: String,
         message: String,
+    },
+    ClipboardText {
+        text: String,
     },
     Pong,
     Close,

@@ -19,6 +19,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 pub mod desktop;
 pub mod session_hijack;
+pub mod input;
 
 #[derive(Clone)]
 pub struct HostOptions {
@@ -350,6 +351,9 @@ impl Host {
         let mut desktop_task_abort: Option<tokio::task::JoinHandle<()>> = None;
         let current_cols = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(80));
         let current_rows = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(24));
+        let current_zoom = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(1.0)));
+        let current_pan_x = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(0.0)));
+        let current_pan_y = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(f32::to_bits(0.0)));
 
         loop {
             tokio::select! {
@@ -396,16 +400,21 @@ impl Host {
                                 let tx = desktop_tx.clone();
                                 let cols_ref = current_cols.clone();
                                 let rows_ref = current_rows.clone();
+                                let zoom_ref = current_zoom.clone();
+                                let pan_x_ref = current_pan_x.clone();
+                                let pan_y_ref = current_pan_y.clone();
                                 let handle = tokio::spawn(async move {
                                     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100)); // ~10 FPS
                                     loop {
                                         interval.tick().await;
                                         let c = cols_ref.load(std::sync::atomic::Ordering::Relaxed);
                                         let r = rows_ref.load(std::sync::atomic::Ordering::Relaxed);
-                                        // Use blocking operation safely by spawning it on a blocking thread or just direct (xcap might block slightly)
-                                        // Wait, capture_desktop_frame does some image processing. Better spawn_blocking or just inline since tokio can handle short blocks.
+                                        let z = f32::from_bits(zoom_ref.load(std::sync::atomic::Ordering::Relaxed));
+                                        let px = f32::from_bits(pan_x_ref.load(std::sync::atomic::Ordering::Relaxed));
+                                        let py = f32::from_bits(pan_y_ref.load(std::sync::atomic::Ordering::Relaxed));
+                                        
                                         let frame_res = tokio::task::spawn_blocking(move || {
-                                            crate::desktop::capture_desktop_frame(c, r)
+                                            crate::desktop::capture_desktop_frame(c, r, z, px, py)
                                         }).await;
                                         
                                         match frame_res {
@@ -434,6 +443,25 @@ impl Host {
                         }
                         Ok(Ok(ClientToHost::Ping)) => {
                             let _ = stream.send(&HostToClient::Pong).await;
+                        }
+                        Ok(Ok(ClientToHost::MouseInput { x, y, button, state })) => {
+                            crate::input::handle_mouse_input(x as i32, y as i32, button, state);
+                        }
+                        Ok(Ok(ClientToHost::MouseScroll { delta_x, delta_y })) => {
+                            crate::input::handle_mouse_scroll(delta_x, delta_y);
+                        }
+                        Ok(Ok(ClientToHost::KeyboardInput { keycode, state })) => {
+                            crate::input::handle_keyboard_input(keycode, state);
+                        }
+                        Ok(Ok(ClientToHost::SetZoom { zoom_factor, pan_x, pan_y })) => {
+                            current_zoom.store(f32::to_bits(zoom_factor), std::sync::atomic::Ordering::Relaxed);
+                            current_pan_x.store(f32::to_bits(pan_x), std::sync::atomic::Ordering::Relaxed);
+                            current_pan_y.store(f32::to_bits(pan_y), std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Ok(Ok(ClientToHost::ClipboardText { text })) => {
+                            if let Ok(mut ctx) = arboard::Clipboard::new() {
+                                let _ = ctx.set_text(text);
+                            }
                         }
                         Ok(Ok(ClientToHost::Close)) | Ok(Err(_)) => {
                             break;

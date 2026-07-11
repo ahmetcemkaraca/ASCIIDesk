@@ -146,18 +146,38 @@ impl AsciiEncoder for DefaultAsciiEncoder {
     }
 }
 
-pub fn capture_desktop_frame(cols: u16, rows: u16) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub fn capture_desktop_frame(cols: u16, rows: u16, zoom_factor: f32, pan_x: f32, pan_y: f32) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let monitor = Monitor::all()?.into_iter().next().ok_or("No active monitor found")?;
     let xcap_image = monitor.capture_image()?;
     
-    // xcap returns RgbaImage which implements ImageBuffer, but we might need to convert or wrap it.
-    // Actually, xcap::image is a re-export or compatible with image crate?
-    // Let's create an image::RgbaImage from the raw data.
-    let img = image::RgbaImage::from_raw(
+    let mut img = image::RgbaImage::from_raw(
         xcap_image.width(),
         xcap_image.height(),
         xcap_image.into_raw(),
     ).ok_or("Failed to create RgbaImage from raw data")?;
+
+    // Implement Zoom and Pan
+    let zoom = zoom_factor.max(0.1).min(10.0);
+    if (zoom - 1.0).abs() > 0.01 || pan_x != 0.0 || pan_y != 0.0 {
+        let orig_w = img.width() as f32;
+        let orig_h = img.height() as f32;
+        
+        let new_w = (orig_w / zoom).clamp(1.0, orig_w);
+        let new_h = (orig_h / zoom).clamp(1.0, orig_h);
+        
+        // Calculate top-left corner based on pan_x and pan_y (-1.0 to 1.0)
+        let max_pan_x = orig_w - new_w;
+        let max_pan_y = orig_h - new_h;
+        
+        let normalized_pan_x = (pan_x + 1.0) / 2.0; // 0.0 to 1.0
+        let normalized_pan_y = (pan_y + 1.0) / 2.0;
+        
+        let crop_x = (normalized_pan_x * max_pan_x).clamp(0.0, max_pan_x) as u32;
+        let crop_y = (normalized_pan_y * max_pan_y).clamp(0.0, max_pan_y) as u32;
+        
+        let cropped = image::imageops::crop(&mut img, crop_x, crop_y, new_w as u32, new_h as u32).to_image();
+        img = cropped;
+    }
 
     let resized = image::imageops::resize(&img, cols as u32, rows as u32, image::imageops::FilterType::Nearest);
     
