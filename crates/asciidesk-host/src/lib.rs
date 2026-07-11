@@ -344,7 +344,7 @@ impl Host {
 
         let master_close_handle = pair.master;
 
-        let (desktop_tx, mut desktop_rx) = tokio::sync::mpsc::channel::<String>(16);
+        let (desktop_tx, mut desktop_rx) = tokio::sync::mpsc::channel::<Result<String, String>>(16);
         let mut desktop_task_abort: Option<tokio::task::JoinHandle<()>> = None;
         let current_cols = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(80));
         let current_rows = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(24));
@@ -356,8 +356,18 @@ impl Host {
                     stream.send(&HostToClient::PtyOutput { bytes }).await?;
                 }
                 // Read from desktop capture -> Send to Client
-                Some(frame_text) = desktop_rx.recv() => {
-                    stream.send(&HostToClient::DesktopFrame { frame_text }).await?;
+                Some(frame_res) = desktop_rx.recv() => {
+                    match frame_res {
+                        Ok(frame_text) => {
+                            stream.send(&HostToClient::DesktopFrame { frame_text }).await?;
+                        }
+                        Err(e) => {
+                            stream.send(&HostToClient::Error {
+                                code: "CAPTURE_FAILED".to_string(),
+                                message: format!("Desktop capture failed: {}", e),
+                            }).await?;
+                        }
+                    }
                 }
                 // Read from client -> Handle
                 msg_res = tokio::time::timeout(std::time::Duration::from_secs(15), stream.next()) => {
@@ -396,8 +406,16 @@ impl Host {
                                             crate::desktop::capture_desktop_frame(c, r)
                                         }).await;
                                         
-                                        if let Ok(Ok(frame)) = frame_res {
-                                            if tx.send(frame).await.is_err() {
+                                        match frame_res {
+                                            Ok(Ok(frame)) => {
+                                                if tx.send(Ok(frame)).await.is_err() { break; }
+                                            }
+                                            Ok(Err(e)) => {
+                                                if tx.send(Err(e.to_string())).await.is_err() { break; }
+                                                break; // Stop stream on error
+                                            }
+                                            Err(e) => {
+                                                if tx.send(Err(format!("Task panicked: {}", e))).await.is_err() { break; }
                                                 break;
                                             }
                                         }

@@ -279,6 +279,17 @@ impl Client {
                             println!("\n[ASCIIDesk] Remote process exited with code {}", exit_code);
                             break;
                         }
+                        Ok(HostToClient::Error { code, message }) => {
+                            if mode == ClientMode::Desktop {
+                                // Draw it nicely in the center of the terminal over the empty desktop frame
+                                print!("\x1b[2J\x1b[H\x1b[31m[ERROR {}]\r\n{}\x1b[0m", code, message);
+                                let _ = stdout.flush();
+                            } else {
+                                // If in PTY mode, maybe just print it with a prefix
+                                print!("\r\n\x1b[31m[Host Error: {}]\x1b[0m\r\n", message);
+                                let _ = stdout.flush();
+                            }
+                        }
                         Ok(HostToClient::Pong) => {
                             last_pong = std::time::Instant::now();
                         }
