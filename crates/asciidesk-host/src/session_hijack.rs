@@ -43,11 +43,11 @@ pub fn hijack_active_session() {
             }
             
             // Default to :0 if we found Xorg but no explicit display argument
-            let display = found_display.unwrap_or_else(|| ":0".to_string());
+            let display_env = found_display.unwrap_or_else(|| ":0".to_string());
             
             if let Some(auth) = found_auth {
-                info!("Hijacking GUI session! Found DISPLAY={} XAUTHORITY={}", display, auth);
-                std::env::set_var("DISPLAY", display);
+                info!("Hijacking GUI session! Found DISPLAY={} XAUTHORITY={}", display_env, auth);
+                std::env::set_var("DISPLAY", display_env);
                 std::env::set_var("XAUTHORITY", auth);
             } else {
                 warn!("Could not find XAUTHORITY in running processes. Assuming no active X11 GUI.");
