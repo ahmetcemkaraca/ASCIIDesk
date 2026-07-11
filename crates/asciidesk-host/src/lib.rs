@@ -344,7 +344,6 @@ impl Host {
 
         let master_close_handle = pair.master;
 
-        // Loop reading network messages and PTY output
         loop {
             tokio::select! {
                 // Read from PTY output -> Send to Client
@@ -352,14 +351,14 @@ impl Host {
                     stream.send(&HostToClient::PtyOutput { bytes }).await?;
                 }
                 // Read from client -> Handle
-                msg_res = stream.next() => {
+                msg_res = tokio::time::timeout(std::time::Duration::from_secs(15), stream.next()) => {
                     match msg_res {
-                        Ok(ClientToHost::PtyInput { bytes }) => {
+                        Ok(Ok(ClientToHost::PtyInput { bytes })) => {
                             if pty_in_tx.send(bytes).await.is_err() {
                                 break;
                             }
                         }
-                        Ok(ClientToHost::PtyResize { cols, rows }) => {
+                        Ok(Ok(ClientToHost::PtyResize { cols, rows })) => {
                             info!("Resizing remote PTY to {}x{}", cols, rows);
                             let _ = master_close_handle.resize(PtySize {
                                 rows,
@@ -368,10 +367,15 @@ impl Host {
                                 pixel_height: 0,
                             });
                         }
-                        Ok(ClientToHost::Ping) => {
+                        Ok(Ok(ClientToHost::Ping)) => {
                             let _ = stream.send(&HostToClient::Pong).await;
                         }
-                        Ok(ClientToHost::Close) | Err(_) => {
+                        Ok(Ok(ClientToHost::Close)) | Ok(Err(_)) => {
+                            break;
+                        }
+                        Err(_) => {
+                            // Timeout elapsed without receiving any message from client
+                            warn!("Connection timed out waiting for keepalive");
                             break;
                         }
                         _ => {}
@@ -454,12 +458,23 @@ async fn run_host_signaling(
                         RendezvousMessage::ClientMatched { client_name, client_public_key } => {
                             info!("Rendezvous client matched: {} ({})", client_name, client_public_key);
                             let mut candidates = Vec::new();
+                            let port = listen_addr.split(':').last().unwrap_or("7373");
+                            
                             if let Ok(ip) = local_ip_address::local_ip() {
-                                let port = listen_addr.split(':').last().unwrap_or("7373");
                                 candidates.push(format!("ws://{}:{}", ip, port));
                             }
-                            let port = listen_addr.split(':').last().unwrap_or("7373");
                             candidates.push(format!("ws://127.0.0.1:{}", port));
+                            
+                            // NAT Traversal / Public IP
+                            if let Ok(resp) = reqwest::get("https://api.ipify.org").await {
+                                if let Ok(ip_text) = resp.text().await {
+                                    let ip_text = ip_text.trim();
+                                    if !ip_text.is_empty() {
+                                        candidates.push(format!("ws://{}:{}", ip_text, port));
+                                        info!("Added public IP candidate: {}", ip_text);
+                                    }
+                                }
+                            }
                             
                             let reply = RendezvousMessage::SendCandidates {
                                 target_public_key: client_public_key,

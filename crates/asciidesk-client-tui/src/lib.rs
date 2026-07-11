@@ -206,15 +206,25 @@ impl Client {
         });
 
         let mut stdout = std::io::stdout();
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut last_pong = std::time::Instant::now();
 
         loop {
             tokio::select! {
+                _ = ping_interval.tick() => {
+                    if last_pong.elapsed().as_secs() > 15 {
+                        break;
+                    }
+                    let _ = stream.send(&ClientToHost::Ping).await;
+                }
                 // Read local events -> Send to host
                 Some(event) = evt_rx.recv() => {
                     match event {
                         Event::Key(key_event) => {
-                            if let Some(bytes) = key_event_to_bytes(key_event) {
-                                stream.send(&ClientToHost::PtyInput { bytes }).await?;
+                            if key_event.kind == crossterm::event::KeyEventKind::Press {
+                                if let Some(bytes) = key_event_to_bytes(key_event) {
+                                    stream.send(&ClientToHost::PtyInput { bytes }).await?;
+                                }
                             }
                         }
                         Event::Resize(width, height) => {
@@ -239,7 +249,9 @@ impl Client {
                             println!("\n[ASCIIDesk] Remote process exited with code {}", exit_code);
                             break;
                         }
-                        Ok(HostToClient::Pong) => {}
+                        Ok(HostToClient::Pong) => {
+                            last_pong = std::time::Instant::now();
+                        }
                         Ok(HostToClient::Close) | Err(_) => {
                             break;
                         }
