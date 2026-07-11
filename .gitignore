@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# local configuration files
+config.json
+session_audit.log
+*.log
+
+# Windows specific
+Thumbs.db
+Desktop.ini

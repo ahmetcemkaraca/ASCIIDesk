@@ -1,0 +1,24 @@
+[package]
+name = "asciidesk-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "asciidesk"
+path = "src/main.rs"
+
+[dependencies]
+asciidesk-core = { path = "../asciidesk-core" }
+asciidesk-protocol = { path = "../asciidesk-protocol" }
+asciidesk-transport = { path = "../asciidesk-transport" }
+asciidesk-host = { path = "../asciidesk-host" }
+asciidesk-client-tui = { path = "../asciidesk-client-tui" }
+asciidesk-rendezvous = { path = "../asciidesk-rendezvous" }
+
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+local-ip-address = { workspace = true }
+portable-pty = { workspace = true }

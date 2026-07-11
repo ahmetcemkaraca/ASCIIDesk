@@ -1,0 +1,21 @@
+[package]
+name = "asciidesk-client-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+asciidesk-core = { path = "../asciidesk-core" }
+asciidesk-protocol = { path = "../asciidesk-protocol" }
+asciidesk-transport = { path = "../asciidesk-transport" }
+asciidesk-rendezvous = { path = "../asciidesk-rendezvous" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
