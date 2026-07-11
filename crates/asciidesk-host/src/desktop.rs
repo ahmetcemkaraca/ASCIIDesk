@@ -146,6 +146,36 @@ impl AsciiEncoder for DefaultAsciiEncoder {
     }
 }
 
+pub fn capture_desktop_frame(cols: u16, rows: u16) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let monitor = Monitor::all()?.into_iter().next().ok_or("No active monitor found")?;
+    let xcap_image = monitor.capture_image()?;
+    
+    // xcap returns RgbaImage which implements ImageBuffer, but we might need to convert or wrap it.
+    // Actually, xcap::image is a re-export or compatible with image crate?
+    // Let's create an image::RgbaImage from the raw data.
+    let img = image::RgbaImage::from_raw(
+        xcap_image.width(),
+        xcap_image.height(),
+        xcap_image.into_raw(),
+    ).ok_or("Failed to create RgbaImage from raw data")?;
+
+    let resized = image::imageops::resize(&img, cols as u32, rows as u32, image::imageops::FilterType::Nearest);
+    
+    let mut out = String::with_capacity((cols * rows * 20) as usize);
+    for y in 0..rows as u32 {
+        for x in 0..cols as u32 {
+            let pixel = resized.get_pixel(x, y);
+            let r = pixel[0];
+            let g = pixel[1];
+            let b = pixel[2];
+            out.push_str(&format!("\x1b[38;2;{};{};{}m█", r, g, b));
+        }
+        out.push_str("\x1b[0m\r\n");
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

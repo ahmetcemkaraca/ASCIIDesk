@@ -207,7 +207,7 @@ impl Host {
             protocol_version: "1.0".to_string(),
             host_name: host_name.to_string(),
             host_public_key: host_pub_key.to_vec(),
-            capabilities: vec![Capability::TerminalPty, Capability::TerminalResize],
+            capabilities: vec![Capability::TerminalPty, Capability::TerminalResize, Capability::DesktopStreaming],
         }).await?;
 
         // 3. Authenticate client
@@ -344,11 +344,20 @@ impl Host {
 
         let master_close_handle = pair.master;
 
+        let (desktop_tx, mut desktop_rx) = tokio::sync::mpsc::channel::<String>(16);
+        let mut desktop_task_abort: Option<tokio::task::JoinHandle<()>> = None;
+        let current_cols = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(80));
+        let current_rows = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(24));
+
         loop {
             tokio::select! {
                 // Read from PTY output -> Send to Client
                 Some(bytes) = pty_out_rx.recv() => {
                     stream.send(&HostToClient::PtyOutput { bytes }).await?;
+                }
+                // Read from desktop capture -> Send to Client
+                Some(frame_text) = desktop_rx.recv() => {
+                    stream.send(&HostToClient::DesktopFrame { frame_text }).await?;
                 }
                 // Read from client -> Handle
                 msg_res = tokio::time::timeout(std::time::Duration::from_secs(15), stream.next()) => {
@@ -360,12 +369,48 @@ impl Host {
                         }
                         Ok(Ok(ClientToHost::PtyResize { cols, rows })) => {
                             info!("Resizing remote PTY to {}x{}", cols, rows);
+                            current_cols.store(cols, std::sync::atomic::Ordering::Relaxed);
+                            current_rows.store(rows, std::sync::atomic::Ordering::Relaxed);
                             let _ = master_close_handle.resize(PtySize {
                                 rows,
                                 cols,
                                 pixel_width: 0,
                                 pixel_height: 0,
                             });
+                        }
+                        Ok(Ok(ClientToHost::StartDesktopStream)) => {
+                            info!("Starting desktop stream");
+                            if desktop_task_abort.is_none() {
+                                let tx = desktop_tx.clone();
+                                let cols_ref = current_cols.clone();
+                                let rows_ref = current_rows.clone();
+                                let handle = tokio::spawn(async move {
+                                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100)); // ~10 FPS
+                                    loop {
+                                        interval.tick().await;
+                                        let c = cols_ref.load(std::sync::atomic::Ordering::Relaxed);
+                                        let r = rows_ref.load(std::sync::atomic::Ordering::Relaxed);
+                                        // Use blocking operation safely by spawning it on a blocking thread or just direct (xcap might block slightly)
+                                        // Wait, capture_desktop_frame does some image processing. Better spawn_blocking or just inline since tokio can handle short blocks.
+                                        let frame_res = tokio::task::spawn_blocking(move || {
+                                            crate::desktop::capture_desktop_frame(c, r)
+                                        }).await;
+                                        
+                                        if let Ok(Ok(frame)) = frame_res {
+                                            if tx.send(frame).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                });
+                                desktop_task_abort = Some(handle);
+                            }
+                        }
+                        Ok(Ok(ClientToHost::StopDesktopStream)) => {
+                            info!("Stopping desktop stream");
+                            if let Some(handle) = desktop_task_abort.take() {
+                                handle.abort();
+                            }
                         }
                         Ok(Ok(ClientToHost::Ping)) => {
                             let _ = stream.send(&HostToClient::Pong).await;

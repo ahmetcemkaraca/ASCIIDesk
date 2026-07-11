@@ -21,4 +21,5 @@ ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 local-ip-address = { workspace = true }
 xcap = { workspace = true }
+image = { workspace = true }
 reqwest = "0.12"

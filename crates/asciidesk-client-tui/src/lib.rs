@@ -90,7 +90,7 @@ impl Client {
             protocol_version: "1.0".to_string(),
             client_name,
             client_public_key: client_pub_key_bytes,
-            capabilities: vec![Capability::TerminalPty, Capability::TerminalResize],
+            capabilities: vec![Capability::TerminalPty, Capability::TerminalResize, Capability::DesktopStreaming],
         }).await?;
 
         // 2. Expect Host HelloAck
@@ -208,6 +208,10 @@ impl Client {
         let mut stdout = std::io::stdout();
         let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         let mut last_pong = std::time::Instant::now();
+        
+        #[derive(PartialEq)]
+        enum ClientMode { Pty, Desktop }
+        let mut mode = ClientMode::Pty;
 
         loop {
             tokio::select! {
@@ -222,8 +226,26 @@ impl Client {
                     match event {
                         Event::Key(key_event) => {
                             if key_event.kind == crossterm::event::KeyEventKind::Press {
-                                if let Some(bytes) = key_event_to_bytes(key_event) {
-                                    stream.send(&ClientToHost::PtyInput { bytes }).await?;
+                                // Toggle Mode on Ctrl+G
+                                if key_event.code == KeyCode::Char('g') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    if mode == ClientMode::Pty {
+                                        mode = ClientMode::Desktop;
+                                        let _ = stream.send(&ClientToHost::StartDesktopStream).await;
+                                        print!("\x1b[2J\x1b[H");
+                                        let _ = stdout.flush();
+                                    } else {
+                                        mode = ClientMode::Pty;
+                                        let _ = stream.send(&ClientToHost::StopDesktopStream).await;
+                                        print!("\x1b[2J\x1b[H");
+                                        let _ = stdout.flush();
+                                        // Trigger a resize to force redraw of PTY
+                                        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+                                        let _ = stream.send(&ClientToHost::PtyResize { cols, rows }).await;
+                                    }
+                                } else if mode == ClientMode::Pty {
+                                    if let Some(bytes) = key_event_to_bytes(key_event) {
+                                        stream.send(&ClientToHost::PtyInput { bytes }).await?;
+                                    }
                                 }
                             }
                         }
@@ -240,8 +262,16 @@ impl Client {
                 msg_res = stream.next() => {
                     match msg_res {
                         Ok(HostToClient::PtyOutput { bytes }) => {
-                            stdout.write_all(&bytes)?;
-                            stdout.flush()?;
+                            if mode == ClientMode::Pty {
+                                stdout.write_all(&bytes)?;
+                                stdout.flush()?;
+                            }
+                        }
+                        Ok(HostToClient::DesktopFrame { frame_text }) => {
+                            if mode == ClientMode::Desktop {
+                                print!("\x1b[H{}", frame_text);
+                                let _ = stdout.flush();
+                            }
                         }
                         Ok(HostToClient::PtyExit { exit_code }) => {
                             // Restore terminal, then show exit code

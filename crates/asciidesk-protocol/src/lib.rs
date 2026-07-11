@@ -13,6 +13,7 @@ pub enum Capability {
     FileTransfer,
     RelayFallback,
     TrustedDeviceAuth,
+    DesktopStreaming,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -40,6 +41,8 @@ pub enum ClientToHost {
     MouseEventPlaceholder,
     KeyboardEventPlaceholder,
     DesktopControlRequestPlaceholder,
+    StartDesktopStream,
+    StopDesktopStream,
     Ping,
     Close,
 }
@@ -72,6 +75,9 @@ pub enum HostToClient {
         height_cells: u16,
         encoding: String,
         payload: Vec<u8>,
+    },
+    DesktopFrame {
+        frame_text: String,
     },
     Error {
         code: String,
